@@ -1,0 +1,332 @@
+---
+title: "Time series analysis assignment 3"
+output: html_document
+date: "2024-05-18"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(tseries)
+library(vars)
+library(TSA)
+library(forecast)
+library(x12)
+library(dlm)
+library(dLagM)
+library(car)
+library(knitr)
+library(dynlm)
+```
+
+```{r}
+# Read the CSV file
+MJ <- read_csv("/Users/macbookair/Desktop/Cannabis_Retail_Sales_by_Week_Ending.csv")
+
+# Convert 'Week Ending' to Date type
+MJ <- MJ %>% mutate(`Week Ending` = as.Date(`Week Ending`, format = "%m/%d/%Y"))
+
+# Create a time series object for 'Medical Marijuana Retail Sales'
+start_date <- as.Date("2023-01-14")
+end_date <- as.Date("2024-02-29")
+
+# Calculate the frequency for weekly data
+num_weeks <- as.numeric(difftime(end_date, start_date, units = "weeks")) + 1
+
+MJ.ts <- ts(MJ$`Medical Marijuana Retail Sales`, start = c(2023, 3), frequency = 52)
+
+# Display the time series object
+print(MJ.ts)
+
+plot(MJ.ts, xlab = "Date", ylab = "Revenue", type = "o", main = "Figure 1: The weekly total sales revenue from medical canabis")
+```
+
+## ARIMA Models
+
+```{r}
+BC <- BoxCox.ar(y = MJ.ts, lambda = seq(-2, 2, 0.01))
+```
+
+
+```{r}
+BC$ci
+```
+
+
+```{r}
+lambda <- BC$lambda[which(max(BC$loglike)==BC$loglike)]
+lambda
+```
+
+```{r}
+MJ.TS.BC <- (MJ.ts^lambda-1)/lambda
+plot(MJ.TS.BC, xlab ="Week", ylab ="Revenue", type ="o", main ="Box-Cox transformed the weekly total sales revenue from medical canabis")
+```
+
+```{r}
+qqnorm(MJ.TS.BC, main = "QQ plot of the time series")
+qqline(MJ.TS.BC)
+```
+
+```{r}
+shapiro.test(MJ.TS.BC)
+```
+After transforming using the Box-Cox method, we can see that the data is still the same, there is no change in terms of normality as we can see from the Q-Q plot and the Shapiro-Wil test. Therefore, the transformed data will not be used. We will proceed to differencing.
+
+```{r}
+MJ.ts.diff <- diff(MJ.ts, differences = 1)
+plot(MJ.ts.diff, xlab = "Week", ylab = "First difference of the weekly medical canabis sales series")
+```
+
+```{r}
+adf.test(MJ.ts.diff, alternative = c("stationary"))
+pp.test(MJ.ts.diff)
+kpss.test(MJ.ts.diff)
+```
+
+The adf test gave the p-value of 0.01, which is smaller than 0.05, therefore, we can reject the null hypothesis of non-stationarity. Similarly, the pp test also gave the p-value of 0.01 < 0.05, thus, the null hypothesis of non-stationarity will be rejected. On the other hand, the KPSS test gave the p-value of 0.1 > 0.05, therefore, the null-hypothesis of stationarity will be accepted. Overall, all the tests showed that the data is stationary.
+
+```{r}
+par(mfrow=c(1,2))
+acf(MJ.ts.diff, main ="Figure 7: ACF of first difference weekly difference in medical canabis sales")
+pacf(MJ.ts.diff, main ="Figure 8: ACF of first difference weekly difference in medical canabis sales")
+```
+
+From the ACF, we can see that the number of significant columns can be 8,9, or 10. Thus, the possible set for p can be (8,9,10). In the PACF, we can see that the number of significant columns can be 5 or 6, thus, the possible set for q can be (5,6). Therefore, the possible ARIMA sets can be: ARIMA(8, 1, 5), ARIMA(8, 1, 6), ARIMA(9, 1, 5), ARIMA(9, 1, 6), ARIMA(10, 1, 5), ARIMA(10, 1, 6).
+
+```{r}
+eacf(MJ.ts.diff)
+```
+
+From the EACF, we can see that the best top left point is p(3) and q(4). Thus, we have the following possible ARIMA model: ARIMA(3,1,4)
+
+```{r}
+res = armasubsets(y= MJ.ts.diff, nar=14, nma=14, y.name='p', ar.method='ols')
+plot(res)
+```
+
+From the BIC plot, we can see that the possible set for p is (5,6) while q=1. Thus, we have the following sets of ARIMA models: ARIMA(5,1,1) and ARIMA(6,1,1)
+
+Overall, possible ARIMA models that have to be tested include: ARIMA(8, 1, 5), ARIMA(8, 1, 6), ARIMA(9, 1, 5), ARIMA(9, 1, 6), ARIMA(10, 1, 5), ARIMA(10, 1, 6), ARIMA(3, 1, 4), ARIMA(5, 1, 1), and ARIMA(6, 1, 1)
+
+## Fitted ARIMA models
+
+
+```{r}
+fit_arima_models <- function(data, order_list, methods = c("ML", "CSS", "CSS-ML")) {
+  model_results <- list()
+  
+for (i in seq_along(order_list)) {
+order <- order_list[[i]]
+model_number <- paste0("model.", paste(order, collapse = ""))
+
+for (method in methods) {
+model <- arima(data, order = order, method = method)
+coefs <- coeftest(model)
+model_results[[paste0(model_number, ".", method)]] <- list(model = model, coefs = coefs, method = method)
+}
+}
+return(model_results)
+}
+
+order_list <- list(
+  c(8, 1, 5),
+  c(8, 1, 6),
+  c(9, 1, 5),
+  c(9, 1, 6),
+  c(10, 1, 5),
+  c(10, 1, 6),
+  c(3, 1, 4),
+  c(5, 1, 1),
+  c(6, 1, 1)
+)
+model_results <- fit_arima_models(MJ.ts, order_list)
+```
+
+### Coefficient testing
+
+```{r}
+coefs.815 <- model_results[["model.815.ML"]]$coefs
+coefs.815_css <- model_results[["model.815.CSS"]]$coefs
+coefs.815_css_ml <- model_results[["model.815.CSS-ML"]]$coefs
+coefs.815
+coefs.815_css
+coefs.815_css_ml
+```
+
+All 3 methods of ML, CSS, and ML-CSS show that most variables are significant apart from ma3 and ma5.
+
+```{r}
+coefs.816 <- model_results[["model.816.ML"]]$coefs
+coefs.816_css <- model_results[["model.816.CSS"]]$coefs
+coefs.816_css_ml <- model_results[["model.816.CSS-ML"]]$coefs
+coefs.816
+coefs.816_css
+coefs.816_css_ml
+```
+
+The 3 tests give different results but all 3 have at least one insignificant variable, either ar7, ma3, or ma4.
+
+```{r}
+coefs.915 <- model_results[["model.915.ML"]]$coefs
+coefs.915_css <- model_results[["model.915.CSS"]]$coefs
+coefs.915_css_ml <- model_results[["model.915.CSS-ML"]]$coefs
+coefs.915
+coefs.915_css
+coefs.915_css_ml
+```
+
+All 3 tests show that there are a lot of invalid variables.
+
+```{r}
+coefs.916 <- model_results[["model.916.ML"]]$coefs
+coefs.916_css <- model_results[["model.916.CSS"]]$coefs
+coefs.916_css_ml <- model_results[["model.916.CSS-ML"]]$coefs
+coefs.916
+coefs.916_css
+coefs.916_css_ml
+```
+
+The ML method shows that all variables are insignificant apart from ma5. On the other hand, the CSS method shows that all variables are significant apart from ma2. The CSS-ML method shows the same result as the ML method.
+
+```{r}
+coefs.1015 <- model_results[["model.1015.ML"]]$coefs
+coefs.1015_css <- model_results[["model.1015.CSS"]]$coefs
+coefs.1015_css_ml <- model_results[["model.1015.CSS-ML"]]$coefs
+coefs.1015
+coefs.1015_css
+coefs.1015_css_ml
+```
+
+The ML method and the CSS-ML method shows that all variables are insignificant apart from ar1. However, the CSS method shows that all variables are significant.
+
+```{r}
+coefs.1016 <- model_results[["model.1016.ML"]]$coefs
+coefs.1016_css <- model_results[["model.1016.CSS"]]$coefs
+coefs.1016_css_ml <- model_results[["model.1016.CSS-ML"]]$coefs
+coefs.1016
+coefs.1016_css
+coefs.1016_css_ml
+```
+
+The ML and CSS-ML methods show that there are a lot of insignificant variables but the CSS method shows that all variables are significant.
+
+```{r}
+coefs.314 <- model_results[["model.314.ML"]]$coefs
+coefs.314_css <- model_results[["model.314.CSS"]]$coefs
+coefs.314_css_ml <- model_results[["model.314.CSS-ML"]]$coefs
+coefs.314
+coefs.314_css
+coefs.314_css_ml
+```
+
+All 3 methods show that most varaibles are significant but insignificant variables are still present.
+
+```{r}
+coefs.511 <- model_results[["model.511.ML"]]$coefs
+coefs.511_css <- model_results[["model.511.CSS"]]$coefs
+coefs.511_css_ml <- model_results[["model.511.CSS-ML"]]$coefs
+coefs.511
+coefs.511_css
+coefs.511_css_ml
+```
+
+All 3 methods show that most varaibles are significant but insignificant variables are still present.
+
+```{r}
+coefs.611 <- model_results[["model.611.ML"]]$coefs
+coefs.611_css <- model_results[["model.611.CSS"]]$coefs
+coefs.611_css_ml <- model_results[["model.611.CSS-ML"]]$coefs
+coefs.611
+coefs.611_css
+coefs.611_css_ml
+```
+
+All 3 methods show that most varaibles are significant but insignificant variables are still present.
+
+## Scoring
+
+```{r}
+AIC(coefs.815,coefs.816,coefs.915,coefs.916,coefs.1015,coefs.1016,coefs.314,coefs.511,coefs.611)
+BIC(coefs.815,coefs.816,coefs.915,coefs.916,coefs.1015,coefs.1016,coefs.314,coefs.511,coefs.611)
+```
+
+```{r}
+sort.score <- function(x, score = c("bic", "aic")){
+if (score == "aic"){
+x[with(x, order(AIC)),]
+} else if (score == "bic") {
+x[with(x, order(BIC)),]
+} else {
+warning('score = "x" only accepts valid arguments ("aic","bic")')
+}
+}
+sort.score(AIC(coefs.815,coefs.816,coefs.915,coefs.916,coefs.1015,coefs.1016,coefs.314,coefs.511,coefs.611), score="aic")
+sort.score(BIC(coefs.815,coefs.816,coefs.915,coefs.916,coefs.1015,coefs.1016,coefs.314,coefs.511,coefs.611), score="bic")          
+```
+
+From the AIC and BIC results, we can see that ARIMA(10,1,5) and ARIMA(5,1,1) are the most ideal models. We need to conduct further testing before concluding the best model for the prediction.
+
+```{r}
+calculate_accuracy <- function(p, d, q) {
+model <- Arima(MJ.ts, order=c(p, d, q), method='ML')
+accuracy_vals <- accuracy(model)[1:7]
+return(accuracy_vals)
+}
+
+values_order <- list(
+  c(8, 1, 5),
+  c(8, 1, 6),
+  c(9, 1, 5),
+  c(9, 1, 6),
+  c(10, 1, 5),
+  c(10, 1, 6),
+  c(3, 1, 4),
+  c(5, 1, 1),
+  c(6, 1, 1)
+)
+
+df.Smodels <- data.frame(matrix(NA, nrow = length(values_order), ncol = 7))
+colnames(df.Smodels) <- c("ME", "RMSE", "MAE", "MPE", "MAPE", "MASE", "ACF1")
+rownames(df.Smodels) <- c(
+  "ARIMA(8, 1, 5)", "ARIMA(8, 1, 6)", "ARIMA(9, 1, 5)", "ARIMA(9, 1, 6)", "ARIMA(10, 1, 5)", "ARIMA(10, 1, 6)", "ARIMA(3, 1, 4)", "ARIMA(5, 1, 1)", "ARIMA(6, 1, 1)"
+)
+
+for (i in seq_along(values_order)) {
+order <- values_order[[i]]
+accuracy <- calculate_accuracy(order[1], order[2], order[3])
+df.Smodels[i, ] <- accuracy
+}
+
+df.Smodels
+```
+
+Looking at the results of the accuracy test, ARIMA(10,1,5) seems to be the ideal choice due to its lowest MASE score, along with its low RMSE, MAE, and MAPE scores.
+
+```{r}
+model.1015 <- Arima(MJ.ts, order = c(10, 1, 5), method = 'CSS-ML')
+res.model.1015 <- rstandard(model.1015)
+plot(res.model.1015, xlab='Week',
+     ylab='Standardised sales of medical canabis', type='o', main='Time series plot of standardised sales of medical canabis series')
+```
+
+```{r}
+hist(res.model.1015, xlab='Standardised Residuals',type='o',
+    main = "Histogram of standardised residuals.")
+```
+
+```{r}
+qqnorm(res.model.1015, main = "QQ plot of the standardised residuals")
+qqline(res.model.1015, col = 2, lwd = 1, lty = 2)
+```
+
+```{r}
+shapiro.test(res.model.1015)
+acf(res.model.1015, main='ACF plot of standardised residuals')
+Box.test(res.model.1015, type = "Ljung-Box")
+```
+
+
